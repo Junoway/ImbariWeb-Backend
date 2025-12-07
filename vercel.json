@@ -1,0 +1,14 @@
+{
+  "version": 2,
+  "env": {
+    "STRIPE_SECRET_KEY": "@stripe-secret-key",
+    "FRONTEND_URL": "@frontend-url",
+    "ALLOWED_ORIGIN": "@allowed-origin"
+  },
+  "functions": {
+    "api/**/*.js": {
+      "memory": 1024,
+      "maxDuration": 10
+    }
+  }
+}
