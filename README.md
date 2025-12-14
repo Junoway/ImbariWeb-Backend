@@ -116,7 +116,7 @@ Creates a Stripe Checkout session.
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `STRIPE_SECRET_KEY` | Your Stripe secret key | `sk_test_...` or `sk_live_...` |
-| `FRONTEND_URL` | Your frontend URL for redirects | `https://junoway.github.io/imbaricoffee.github.io` |
+| `FRONTEND_URL` | Your frontend URL for redirects | `https://junoway.github.io/ImbariWeb` |
 | `ALLOWED_ORIGIN` | CORS allowed origin | `https://junoway.github.io` |
 
 ## Security Notes
