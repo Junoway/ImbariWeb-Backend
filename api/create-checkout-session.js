@@ -1,3 +1,46 @@
+// Helper to normalize image URLs for Stripe
+function normalizeImageUrl(image) {
+  if (!image || typeof image !== "string") return null;
+
+  // Already absolute
+  if (image.startsWith("https://") || image.startsWith("http://")) {
+    return image;
+  }
+
+  // Convert relative → absolute
+  if (image.startsWith("/")) {
+    const base = process.env.FRONTEND_URL || "https://www.imbaricoffee.com";
+    return `${base}${image}`;
+  }
+
+  // Anything else is invalid
+  return null;
+}
+// Helper to check for valid http(s) URL
+function isValidHttpUrl(value) {
+  try {
+    const u = new URL(value);
+    return u.protocol === "https:" || u.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
+// Helper to get absolute image URL or null
+function toAbsoluteImageUrl(image) {
+  if (!image) return null;
+
+  // If the frontend sends a relative path like "/images/x.png", convert it
+  if (typeof image === "string" && image.startsWith("/")) {
+    const base = process.env.FRONTEND_URL || "https://www.imbaricoffee.com";
+    return `${base}${image}`;
+  }
+
+  // Otherwise only allow valid absolute http(s) urls
+  if (typeof image === "string" && isValidHttpUrl(image)) return image;
+
+  return null;
+}
 import Stripe from "stripe";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
@@ -69,10 +112,25 @@ export default async function handler(req, res) {
       const unitPrice = round2(Number(item.price || 0));
       const discountedUnitPrice = round2(unitPrice * (1 - discountRatio));
 
-      // IMPORTANT: do not send description at all if empty
+
+      // Helper to get absolute image URL or undefined
+      function toAbsoluteImageUrl(image) {
+        if (!image) return undefined;
+        try {
+          const url = new URL(image, process.env.FRONTEND_URL);
+          if (url.protocol === 'http:' || url.protocol === 'https:') {
+            return url.href;
+          }
+        } catch (e) {
+          // Invalid URL, skip
+        }
+        return undefined;
+      }
+
+      const imageUrl = normalizeImageUrl(item.image);
       const product_data = {
-        name,
-        ...(item.image ? { images: [item.image] } : {}),
+        name: String(item.name || "Item"),
+        ...(imageUrl ? { images: [imageUrl] } : {}),
       };
 
       return {
