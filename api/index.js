@@ -1,7 +1,10 @@
-// api/index.js
-require("dotenv").config();
-const express = require("express");
-const Stripe = require("stripe");
+// api/index.js  (ESM-compatible for Vercel when package.json has "type": "module")
+
+import express from "express";
+import Stripe from "stripe";
+
+// NOTE: On Vercel, environment variables are already injected; dotenv is not required.
+// If you still want dotenv locally, use: import "dotenv/config";
 
 const app = express();
 
@@ -9,9 +12,11 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
   apiVersion: "2023-10-16",
 });
 
+// Parse JSON
 app.use(express.json({ limit: "1mb" }));
 
-// ---- CORS (safer for credentials) ----
+// ---- CORS ----
+// IMPORTANT: With credentials=true, you cannot use "*"
 const allowedOrigins = (process.env.ALLOWED_ORIGIN || "https://www.imbaricoffee.com")
   .split(",")
   .map((s) => s.trim())
@@ -19,29 +24,25 @@ const allowedOrigins = (process.env.ALLOWED_ORIGIN || "https://www.imbaricoffee.
 
 app.use((req, res, next) => {
   const origin = req.headers.origin;
+
   if (origin && allowedOrigins.includes(origin)) {
-    res.header("Access-Control-Allow-Origin", origin);
-  } else {
-    // If you need multi-origin + credentials, do NOT use "*"
-    // Leave unset when origin is not allowed.
+    res.setHeader("Access-Control-Allow-Origin", origin);
   }
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Allow-Credentials", "true");
 
-  res.header("Vary", "Origin");
-  res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  res.header("Access-Control-Allow-Credentials", "true");
-
-  if (req.method === "OPTIONS") return res.sendStatus(200);
+  if (req.method === "OPTIONS") return res.status(200).end();
   next();
 });
 
-// small helpers
+// helpers
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const toCents = (n) => Math.max(0, Math.round(Number(n) * 100));
 
 app.post("/api/create-checkout-session", async (req, res) => {
   try {
-    // Defensive body handling (prevents req.body undefined issues)
     let body = req.body;
     if (typeof body === "string") {
       try {
@@ -63,34 +64,28 @@ app.post("/api/create-checkout-session", async (req, res) => {
       total,
     } = body || {};
 
-    if (!Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ error: "No items provided" });
-    }
-
     if (!process.env.STRIPE_SECRET_KEY) {
       return res.status(500).json({ error: "Missing STRIPE_SECRET_KEY on server" });
     }
 
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: "No items provided" });
+    }
+
     const FRONTEND_URL = process.env.FRONTEND_URL || "https://www.imbaricoffee.com";
 
-    // ---- Server-side discount validation (do not trust client) ----
     const normalizedCode = (discountCode || "").trim().toUpperCase();
     const discountAllowed = normalizedCode === "UBUNTU88";
 
-    // Compute discount ratio for proportional price reduction
     const subtotalNum = round2(Number(subtotal) || 0);
     const discountNum = discountAllowed ? round2(Number(discountAmount) || 0) : 0;
-
-    // Guard discount (cannot exceed subtotal)
     const clampedDiscount = Math.min(discountNum, subtotalNum);
     const discountRatio = subtotalNum > 0 ? clampedDiscount / subtotalNum : 0;
 
-    // ---- Build Stripe line_items ----
     const line_items = items.map((item) => {
       const name = String(item.name || "Item");
       const qty = Math.max(1, Number(item.quantity || 1));
 
-      // Apply discount proportionally by reducing unit price
       const unitPrice = round2(Number(item.price || 0));
       const discountedUnitPrice = round2(unitPrice * (1 - discountRatio));
 
@@ -109,7 +104,6 @@ app.post("/api/create-checkout-session", async (req, res) => {
       };
     });
 
-    // Add extras as positive line items (Stripe-safe)
     const tipNum = round2(Number(tipAmount) || 0);
     if (tipNum > 0) {
       line_items.push({
@@ -150,10 +144,8 @@ app.post("/api/create-checkout-session", async (req, res) => {
       mode: "payment",
       payment_method_types: ["card"],
       line_items,
-
       success_url: `${FRONTEND_URL}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${FRONTEND_URL}/checkout/canceled`,
-
       metadata: {
         location: location || "",
         discountCode: discountAllowed ? normalizedCode : "",
@@ -173,12 +165,5 @@ app.post("/api/create-checkout-session", async (req, res) => {
   }
 });
 
-// NOTE ABOUT VERCEL:
-// If this is deployed as a Vercel Serverless Function, DO NOT app.listen().
-// If it's a traditional server (EC2/Render/etc.), app.listen is fine.
-const PORT = process.env.PORT || 3001;
-if (process.env.VERCEL !== "1") {
-  app.listen(PORT, () => console.log(`✅ Imbari Coffee API running on port ${PORT}`));
-}
-
-module.exports = app;
+// IMPORTANT for Vercel serverless: export default app (no app.listen)
+export default app;
