@@ -1,4 +1,6 @@
 import { logOrder } from "./orders.js";
+import { logOrder } from "../lib/ordersStore.js";
+
 // Helper to normalize image URLs for Stripe
 function normalizeImageUrl(image) {
   if (!image || typeof image !== "string") return null;
