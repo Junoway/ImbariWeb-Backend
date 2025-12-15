@@ -1,3 +1,4 @@
+import { logOrder } from "./orders.js";
 // Helper to normalize image URLs for Stripe
 function normalizeImageUrl(image) {
   if (!image || typeof image !== "string") return null;
@@ -19,6 +20,21 @@ function normalizeImageUrl(image) {
 // Helper to check for valid http(s) URL
 function isValidHttpUrl(value) {
   try {
+        // Log the order attempt (status: pending)
+        logOrder({
+          user: req.user ? req.user.id : null, // If you have auth, otherwise null
+          items,
+          location,
+          shipping,
+          tax,
+          discountCode,
+          discountAmount,
+          tipAmount,
+          subtotal,
+          total,
+          status: "pending",
+          ip: req.headers["x-forwarded-for"] || req.connection?.remoteAddress,
+        });
     const u = new URL(value);
     return u.protocol === "https:" || u.protocol === "http:";
   } catch {
@@ -180,6 +196,22 @@ export default async function handler(req, res) {
     }
 
     const session = await stripe.checkout.sessions.create({
+          // Log success
+          logOrder({
+            user: req.user ? req.user.id : null,
+            items,
+            location,
+            shipping,
+            tax,
+            discountCode,
+            discountAmount,
+            tipAmount,
+            subtotal,
+            total,
+            status: "success",
+            sessionId: session.id,
+            ip: req.headers["x-forwarded-for"] || req.connection?.remoteAddress,
+          });
       mode: "payment",
       payment_method_types: ["card"],
       line_items,
@@ -199,6 +231,22 @@ export default async function handler(req, res) {
 
     return res.status(200).json({ url: session.url });
   } catch (err) {
+        // Log failure
+        logOrder({
+          user: req.user ? req.user.id : null,
+          items: req.body?.items,
+          location: req.body?.location,
+          shipping: req.body?.shipping,
+          tax: req.body?.tax,
+          discountCode: req.body?.discountCode,
+          discountAmount: req.body?.discountAmount,
+          tipAmount: req.body?.tipAmount,
+          subtotal: req.body?.subtotal,
+          total: req.body?.total,
+          status: "failed",
+          error: err.message,
+          ip: req.headers["x-forwarded-for"] || req.connection?.remoteAddress,
+        });
     console.error("create-checkout-session error:", err);
     return res.status(500).json({ error: err?.message || "Server error" });
   }
