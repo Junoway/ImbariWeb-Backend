@@ -22,10 +22,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Deploy to Vercel
+      - name: Deploy to Vercel (Preview on PRs, Production on main)
         uses: amondnet/vercel-action@v25
         with:
           vercel-token: ${{ secrets.VERCEL_TOKEN }}
           vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
           vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
-          prod: ${{ github.ref == 'refs/heads/main' }}
+          vercel-args: ${{ github.ref == 'refs/heads/main' && '--prod' || '' }}
