@@ -4,10 +4,13 @@
   "description": "Serverless backend for Imbari Coffee e-commerce",
   "type": "module",
   "scripts": {
-    "dev": "vercel dev"
+    "dev": "node -e \"console.log('This project uses Vercel serverless functions. Use: npm run vercel:dev')\"",
+    "vercel:dev": "vercel dev --listen 3001"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.0.2",
+    "bcryptjs": "^3.0.3",
+    "jsonwebtoken": "^9.0.3",
     "stripe": "^14.25.0"
   },
   "devDependencies": {
