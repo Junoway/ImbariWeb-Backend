@@ -3,29 +3,139 @@ import Stripe from "stripe";
 import { sql } from "../lib/db.js";
 import { getUserFromRequest, extractUserIdentity } from "../lib/auth.js";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2023-10-16" });
+/**
+ * Stripe client
+ * Keep apiVersion consistent with your Stripe SDK usage
+ */
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+  apiVersion: "2023-10-16",
+});
+
+/**
+ * CORS
+ * - Supports comma-separated ALLOWED_ORIGIN env
+ * - Example: "https://www.imbaricoffee.com,https://imbaricoffee.com,http://localhost:3000"
+ */
+const allowedOrigins = (process.env.ALLOWED_ORIGIN || "https://www.imbaricoffee.com")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+function setCors(req, res) {
+  const origin = req.headers.origin;
+
+  // Reflect allowed origin (required when using credentials)
+  if (origin && allowedOrigins.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  }
+
+  // Important for caches/proxies
+  res.setHeader("Vary", "Origin");
+
+  // Preflight
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  // Only needed if you use cookies; leaving it on is safe if you reflect origin
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+}
+
+function parseBody(req) {
+  if (!req?.body) return {};
+  if (typeof req.body === "string") {
+    try {
+      return JSON.parse(req.body);
+    } catch {
+      return {};
+    }
+  }
+  return req.body;
+}
+
+function normalizeImageUrl(image) {
+  if (!image || typeof image !== "string") return null;
+  if (image.startsWith("https://") || image.startsWith("http://")) return image;
+
+  // Convert /images/... to absolute using FRONTEND_URL
+  if (image.startsWith("/")) {
+    const base = process.env.FRONTEND_URL || "https://www.imbaricoffee.com";
+    return `${base}${image}`;
+  }
+  return null;
+}
 
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const toCents = (n) => Math.max(0, Math.round(Number(n) * 100));
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
+  setCors(req, res);
+
+  // Preflight must succeed or browser blocks your checkout calls
+  if (req.method === "OPTIONS") return res.status(204).end();
+
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method Not Allowed" });
+  }
 
   try {
-    const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
-    const { items = [], location, shipping = 0, tax = 0, discountCode, discountAmount = 0, tipAmount = 0, subtotal = 0, total, email } = body || {};
+    // Hard requirements
+    if (!process.env.STRIPE_SECRET_KEY) {
+      return res.status(500).json({ error: "Missing STRIPE_SECRET_KEY" });
+    }
+    if (!process.env.DATABASE_URL) {
+      return res.status(500).json({ error: "Missing DATABASE_URL" });
+    }
 
-    if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: "Items array is required" });
+    const body = parseBody(req);
 
-    // Optional identity
+    // Accept both shapes to remain backward-compatible:
+    // - your older: { cartItems, customerEmail }
+    // - your newer: { items, email, subtotal, total, ... }
+    const legacyCartItems = Array.isArray(body.cartItems) ? body.cartItems : null;
+    const legacyEmail = typeof body.customerEmail === "string" ? body.customerEmail : null;
+
+    const items = Array.isArray(body.items)
+      ? body.items
+      : legacyCartItems
+      ? legacyCartItems.map((i) => ({
+          name: i.name,
+          quantity: i.quantity,
+          price: typeof i.unitAmount === "number" ? i.unitAmount / 100 : i.price, // support unitAmount cents
+          image: i.image,
+        }))
+      : [];
+
+    const providedEmail =
+      typeof body.email === "string"
+        ? body.email.trim().toLowerCase()
+        : legacyEmail
+        ? legacyEmail.trim().toLowerCase()
+        : null;
+
+    const {
+      location = null,
+      shipping = 0,
+      tax = 0,
+      discountCode = null,
+      discountAmount = 0,
+      tipAmount = 0,
+      subtotal = 0,
+      total = null,
+    } = body || {};
+
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: "Items array is required" });
+    }
+
+    // Optional identity bridging (does NOT require login)
     const decoded = getUserFromRequest(req);
     const { userId, email: tokenEmail } = extractUserIdentity(decoded);
 
-    const providedEmail = typeof email === "string" ? email.trim().toLowerCase() : null;
+    // Prefer authenticated email if available
     const effectiveEmail = tokenEmail || providedEmail || null;
 
     const FRONTEND_URL = process.env.FRONTEND_URL || "https://www.imbaricoffee.com";
 
+    // Discount validation (server-side authority)
     const normalizedCode = (discountCode || "").trim().toUpperCase();
     const discountAllowed = normalizedCode === "UBUNTU88";
 
@@ -37,27 +147,72 @@ export default async function handler(req, res) {
     const shippingNum = round2(Number(shipping) || 0);
     const taxNum = round2(Number(tax) || 0);
     const tipNum = round2(Number(tipAmount) || 0);
-    const totalNum = round2(Number(total) || 0);
 
+    // If client didn’t send total, compute it safely
+    const computedItemsTotal = round2(
+      items.reduce((sum, it) => {
+        const qty = Math.max(1, Number(it.quantity || 1));
+        const price = round2(Number(it.price || 0));
+        const discounted = round2(price * (1 - discountRatio));
+        return sum + discounted * qty;
+      }, 0)
+    );
+    const computedTotal = round2(computedItemsTotal + shippingNum + taxNum + tipNum);
+    const totalNum = round2(total != null ? Number(total) : computedTotal);
+
+    // Stripe line items
     const line_items = items.map((item) => {
       const qty = Math.max(1, Number(item.quantity || 1));
       const unitPrice = round2(Number(item.price || 0));
       const discountedUnitPrice = round2(unitPrice * (1 - discountRatio));
 
+      const imageUrl = normalizeImageUrl(item.image);
+
       return {
         price_data: {
           currency: "usd",
-          product_data: { name: String(item.name || "Item") },
+          product_data: {
+            name: String(item.name || "Item"),
+            ...(imageUrl ? { images: [imageUrl] } : {}),
+          },
           unit_amount: toCents(discountedUnitPrice),
         },
         quantity: qty,
       };
     });
 
-    if (tipNum > 0) line_items.push({ price_data: { currency: "usd", product_data: { name: "Tip" }, unit_amount: toCents(tipNum) }, quantity: 1 });
-    if (shippingNum > 0) line_items.push({ price_data: { currency: "usd", product_data: { name: "Shipping" }, unit_amount: toCents(shippingNum) }, quantity: 1 });
-    if (taxNum > 0) line_items.push({ price_data: { currency: "usd", product_data: { name: "Tax" }, unit_amount: toCents(taxNum) }, quantity: 1 });
+    if (tipNum > 0) {
+      line_items.push({
+        price_data: {
+          currency: "usd",
+          product_data: { name: "Tip (Support our Farmers)" },
+          unit_amount: toCents(tipNum),
+        },
+        quantity: 1,
+      });
+    }
+    if (shippingNum > 0) {
+      line_items.push({
+        price_data: {
+          currency: "usd",
+          product_data: { name: "Shipping" },
+          unit_amount: toCents(shippingNum),
+        },
+        quantity: 1,
+      });
+    }
+    if (taxNum > 0) {
+      line_items.push({
+        price_data: {
+          currency: "usd",
+          product_data: { name: "Tax" },
+          unit_amount: toCents(taxNum),
+        },
+        quantity: 1,
+      });
+    }
 
+    // Create checkout session
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
       payment_method_types: ["card"],
@@ -66,8 +221,11 @@ export default async function handler(req, res) {
       cancel_url: `${FRONTEND_URL}/checkout/canceled`,
       customer_email: effectiveEmail || undefined,
       metadata: {
+        // Identity bridge (critical for order history)
         userId: userId || "",
         email: effectiveEmail || "",
+
+        // Order metadata for reconciliation/analytics
         location: location || "",
         discountCode: discountAllowed ? normalizedCode : "",
         subtotal: String(subtotalNum),
@@ -79,24 +237,48 @@ export default async function handler(req, res) {
       },
     });
 
+    // Store pending order row (this is what powers order history)
     await sql`
-      insert into orders (session_id, status, total, currency, email, user_id, created_at, items, location, shipping, tax, discount_code, discount_amount, tip_amount)
+      insert into orders (
+        session_id, status, total, currency, email, user_id, created_at,
+        items, location, shipping, tax, discount_code, discount_amount, tip_amount
+      )
       values (
-        ${session.id}, 'pending', ${totalNum}, 'usd', ${effectiveEmail}, ${userId},
-        now(), ${JSON.stringify(items)}, ${location || null}, ${shippingNum}, ${taxNum},
-        ${discountAllowed ? normalizedCode : null}, ${clampedDiscount}, ${tipNum}
+        ${session.id},
+        'pending',
+        ${totalNum},
+        'usd',
+        ${effectiveEmail},
+        ${userId},
+        now(),
+        ${JSON.stringify(items)},
+        ${location || null},
+        ${shippingNum},
+        ${taxNum},
+        ${discountAllowed ? normalizedCode : null},
+        ${clampedDiscount},
+        ${tipNum}
       )
       on conflict (session_id) do update set
+        total = excluded.total,
+        currency = excluded.currency,
         email = coalesce(excluded.email, orders.email),
         user_id = coalesce(excluded.user_id, orders.user_id),
         items = excluded.items,
-        total = excluded.total
+        location = coalesce(excluded.location, orders.location),
+        shipping = excluded.shipping,
+        tax = excluded.tax,
+        discount_code = excluded.discount_code,
+        discount_amount = excluded.discount_amount,
+        tip_amount = excluded.tip_amount
     `;
 
-    return res.status(200).json({ url: session.url, sessionId: session.id });
+    return res.status(200).json({
+      url: session.url,
+      sessionId: session.id,
+    });
   } catch (err) {
     console.error("create-checkout-session error:", err);
     return res.status(500).json({ error: err?.message || "Server error" });
   }
 }
-
