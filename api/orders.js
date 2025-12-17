@@ -1,18 +1,17 @@
 // api/orders.js
-import { getOrders } from "../lib/ordersStore.js";
+import { sql } from "../lib/db.js";
+
+const allowedOrigins = (process.env.ALLOWED_ORIGIN || "https://www.imbaricoffee.com")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 function setCors(req, res) {
-  const allowedOrigins = (process.env.ALLOWED_ORIGIN || "https://www.imbaricoffee.com")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-
   const origin = req.headers.origin;
 
   if (origin && allowedOrigins.includes(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
-  } else {
-    // Optional fallback: if no Origin header (curl/server-to-server), allow your primary site
+  } else if (!origin) {
     res.setHeader("Access-Control-Allow-Origin", allowedOrigins[0] || "https://www.imbaricoffee.com");
   }
 
@@ -22,28 +21,61 @@ function setCors(req, res) {
   res.setHeader("Access-Control-Allow-Credentials", "true");
 }
 
-export default function handler(req, res) {
+export default async function handler(req, res) {
   setCors(req, res);
 
-  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method !== "GET") return res.status(405).json({ error: "Method Not Allowed" });
 
-  // GET /api/orders?user=userId
-  // GET /api/orders?admin=true
-  const userId = req.query?.user;
   const isAdmin = req.query?.admin === "true";
+  const email = req.query?.email ? String(req.query.email).trim().toLowerCase() : null;
+  const sessionId = req.query?.session_id ? String(req.query.session_id).trim() : null;
 
-  const allOrders = getOrders();
+  // NOTE: For real production, protect admin with auth (JWT) or an API key header.
+  try {
+    if (sessionId) {
+      const rows = await sql`
+        select
+          session_id, status, total, currency, email,
+          created_at, paid_at, error,
+          items, location, shipping, tax, discount_code, discount_amount, tip_amount
+        from orders
+        where session_id = ${sessionId}
+        limit 1
+      `;
+      return res.status(200).json({ orders: rows });
+    }
 
-  if (isAdmin) {
-    return res.status(200).json({ orders: allOrders });
+    if (isAdmin) {
+      const rows = await sql`
+        select
+          session_id, status, total, currency, email,
+          created_at, paid_at, error,
+          items, location, shipping, tax, discount_code, discount_amount, tip_amount
+        from orders
+        order by created_at desc
+        limit 200
+      `;
+      return res.status(200).json({ orders: rows });
+    }
+
+    if (email) {
+      const rows = await sql`
+        select
+          session_id, status, total, currency, email,
+          created_at, paid_at, error,
+          items, location, shipping, tax, discount_code, discount_amount, tip_amount
+        from orders
+        where lower(email) = ${email}
+        order by created_at desc
+        limit 200
+      `;
+      return res.status(200).json({ orders: rows });
+    }
+
+    return res.status(200).json({ orders: [] });
+  } catch (err) {
+    console.error("orders error:", err);
+    return res.status(500).json({ error: "Failed to fetch orders" });
   }
-
-  if (userId) {
-    const userOrders = allOrders.filter((o) => String(o.user || "") === String(userId));
-    return res.status(200).json({ orders: userOrders });
-  }
-
-  // For now, return empty instead of 401 to avoid breaking your UI while testing
-  return res.status(200).json({ orders: [] });
 }

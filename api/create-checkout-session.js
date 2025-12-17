@@ -1,17 +1,6 @@
+// api/create-checkout-session.js
 import Stripe from "stripe";
-import { logOrder } from "../lib/ordersStore.js";
-
-// Helper to normalize image URLs for Stripe
-function normalizeImageUrl(image) {
-  if (!image || typeof image !== "string") return null;
-  if (image.startsWith("https://") || image.startsWith("http://")) return image;
-
-  if (image.startsWith("/")) {
-    const base = process.env.FRONTEND_URL || "https://www.imbaricoffee.com";
-    return `${base}${image}`;
-  }
-  return null;
-}
+import { sql } from "../lib/db.js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
   apiVersion: "2023-10-16",
@@ -21,9 +10,6 @@ const allowedOrigins = (process.env.ALLOWED_ORIGIN || "https://www.imbaricoffee.
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
-
-const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
-const toCents = (n) => Math.max(0, Math.round(Number(n) * 100));
 
 function setCors(req, res) {
   const origin = req.headers.origin;
@@ -36,6 +22,20 @@ function setCors(req, res) {
   res.setHeader("Access-Control-Allow-Credentials", "true");
 }
 
+function normalizeImageUrl(image) {
+  if (!image || typeof image !== "string") return null;
+  if (image.startsWith("https://") || image.startsWith("http://")) return image;
+
+  if (image.startsWith("/")) {
+    const base = process.env.FRONTEND_URL || "https://www.imbaricoffee.com";
+    return `${base}${image}`;
+  }
+  return null;
+}
+
+const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+const toCents = (n) => Math.max(0, Math.round(Number(n) * 100));
+
 export default async function handler(req, res) {
   setCors(req, res);
 
@@ -45,6 +45,9 @@ export default async function handler(req, res) {
   try {
     if (!process.env.STRIPE_SECRET_KEY) {
       return res.status(500).json({ error: "Missing STRIPE_SECRET_KEY on server" });
+    }
+    if (!process.env.DATABASE_URL) {
+      return res.status(500).json({ error: "Missing DATABASE_URL on server" });
     }
 
     const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
@@ -59,6 +62,7 @@ export default async function handler(req, res) {
       tipAmount = 0,
       subtotal = 0,
       total,
+      email, // optional: pass from frontend if available
     } = body || {};
 
     if (!Array.isArray(items) || items.length === 0) {
@@ -67,7 +71,7 @@ export default async function handler(req, res) {
 
     const FRONTEND_URL = process.env.FRONTEND_URL || "https://www.imbaricoffee.com";
 
-    // validate discount server-side
+    // Validate discount server-side
     const normalizedCode = (discountCode || "").trim().toUpperCase();
     const discountAllowed = normalizedCode === "UBUNTU88";
 
@@ -76,21 +80,9 @@ export default async function handler(req, res) {
     const clampedDiscount = Math.min(discountNum, subtotalNum);
     const discountRatio = subtotalNum > 0 ? clampedDiscount / subtotalNum : 0;
 
-    // Log the order attempt (status: pending)
-    logOrder({
-      user: req.user ? req.user.id : null,
-      items,
-      location,
-      shipping,
-      tax,
-      discountCode,
-      discountAmount,
-      tipAmount,
-      subtotal,
-      total,
-      status: "pending",
-      ip: req.headers["x-forwarded-for"] || req.socket?.remoteAddress,
-    });
+    const shippingNum = round2(Number(shipping) || 0);
+    const taxNum = round2(Number(tax) || 0);
+    const tipNum = round2(Number(tipAmount) || 0);
 
     const line_items = items.map((item) => {
       const qty = Math.max(1, Number(item.quantity || 1));
@@ -113,7 +105,6 @@ export default async function handler(req, res) {
       };
     });
 
-    const tipNum = round2(Number(tipAmount) || 0);
     if (tipNum > 0) {
       line_items.push({
         price_data: {
@@ -125,7 +116,6 @@ export default async function handler(req, res) {
       });
     }
 
-    const shippingNum = round2(Number(shipping) || 0);
     if (shippingNum > 0) {
       line_items.push({
         price_data: {
@@ -137,7 +127,6 @@ export default async function handler(req, res) {
       });
     }
 
-    const taxNum = round2(Number(tax) || 0);
     if (taxNum > 0) {
       line_items.push({
         price_data: {
@@ -149,12 +138,14 @@ export default async function handler(req, res) {
       });
     }
 
+    // Create Stripe Checkout session
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
       payment_method_types: ["card"],
       line_items,
       success_url: `${FRONTEND_URL}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${FRONTEND_URL}/checkout/canceled`,
+      customer_email: email || undefined,
       metadata: {
         location: location || "",
         discountCode: discountAllowed ? normalizedCode : "",
@@ -167,44 +158,15 @@ export default async function handler(req, res) {
       },
     });
 
-    // Log success
-    logOrder({
-      user: req.user ? req.user.id : null,
-      items,
-      location,
-      shipping,
-      tax,
-      discountCode,
-      discountAmount,
-      tipAmount,
-      subtotal,
-      total,
-      status: "success",
-      sessionId: session.id,
-      ip: req.headers["x-forwarded-for"] || req.socket?.remoteAddress,
-    });
+    // Professional best practice: minimal pending order insert
+    await sql`
+      insert into orders (session_id, status, total, currency, email, created_at)
+      values (${session.id}, 'pending', ${Number(total) || 0}, 'usd', ${email || null}, now())
+      on conflict (session_id) do nothing
+    `;
 
-    return res.status(200).json({ url: session.url });
+    return res.status(200).json({ url: session.url, sessionId: session.id });
   } catch (err) {
-    // Log failure
-    try {
-      logOrder({
-        user: req.user ? req.user.id : null,
-        items: req.body?.items,
-        location: req.body?.location,
-        shipping: req.body?.shipping,
-        tax: req.body?.tax,
-        discountCode: req.body?.discountCode,
-        discountAmount: req.body?.discountAmount,
-        tipAmount: req.body?.tipAmount,
-        subtotal: req.body?.subtotal,
-        total: req.body?.total,
-        status: "failed",
-        error: err?.message,
-        ip: req.headers["x-forwarded-for"] || req.socket?.remoteAddress,
-      });
-    } catch (_) {}
-
     console.error("create-checkout-session error:", err);
     return res.status(500).json({ error: err?.message || "Server error" });
   }
