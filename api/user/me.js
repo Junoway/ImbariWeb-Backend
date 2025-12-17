@@ -36,3 +36,7 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: "Failed to load profile" });
   }
 }
+
+
+cd C:\Users\User\Documents\imbari-coffee-backend
+New-Item -ItemType Directory -Force -Path .\api\user | Out-Null
