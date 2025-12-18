@@ -2,6 +2,8 @@
 import bcrypt from "bcryptjs";
 import { sql } from "../../lib/db.js";
 import { applyCors } from "../../lib/cors.js";
+import { sendVerificationEmail } from "../../lib/mailer.js";
+
 
 function normalizeEmail(email) {
   return String(email || "").trim().toLowerCase();
@@ -59,9 +61,11 @@ export default async function handler(req, res) {
 
     // TODO: send email via your mail provider here.
     // For now, keep dev-only log.
-    if (process.env.NODE_ENV !== "production") {
-      console.log(`[DEV] Verification code for ${email}: ${code}`);
-    }
+    await sendVerificationEmail({
+        to: email,
+        code,
+  });
+
 
     return res.status(200).json({ ok: true, message: "Verification code sent" });
   } catch (err) {
