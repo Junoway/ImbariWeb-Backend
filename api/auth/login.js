@@ -2,28 +2,28 @@
 import bcrypt from "bcryptjs";
 import { sql } from "../../lib/db.js";
 import { signJwt } from "../../lib/auth.js";
-import { applyCors } from "../../lib/cors.js"; // adjust path if needed
-
-export default async function handler(req, res) {
-  if (applyCors(req, res)) return; // handles OPTIONS
-
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method Not Allowed" });
-  }
+import { applyCors } from "../../lib/cors.js";
 
 function normalizeEmail(email) {
   return String(email || "").trim().toLowerCase();
 }
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
+  // CORS first (must happen before any returns)
+  if (applyCors(req, res)) return;
+
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method Not Allowed" });
+  }
 
   try {
     const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
     const email = normalizeEmail(body?.email);
     const password = String(body?.password || "");
 
-    if (!email || !password) return res.status(400).json({ error: "Missing credentials" });
+    if (!email || !password) {
+      return res.status(400).json({ error: "Missing credentials" });
+    }
 
     const rows = await sql`
       select id, first_name, last_name, email, password_hash, is_subscribed, email_verified
@@ -31,13 +31,20 @@ export default async function handler(req, res) {
       where lower(email) = ${email}
       limit 1
     `;
-    if (rows.length === 0) return res.status(401).json({ error: "Invalid email or password" });
+
+    if (rows.length === 0) {
+      return res.status(401).json({ error: "Invalid email or password" });
+    }
 
     const u = rows[0];
     const ok = await bcrypt.compare(password, u.password_hash);
-    if (!ok) return res.status(401).json({ error: "Invalid email or password" });
+    if (!ok) {
+      return res.status(401).json({ error: "Invalid email or password" });
+    }
 
-    if (!u.email_verified) return res.status(403).json({ error: "Email not verified" });
+    if (!u.email_verified) {
+      return res.status(403).json({ error: "Email not verified" });
+    }
 
     const token = signJwt({ sub: u.id, email: u.email });
 
@@ -55,5 +62,4 @@ export default async function handler(req, res) {
     console.error("login error:", err);
     return res.status(500).json({ error: "Login failed" });
   }
-}
 }
