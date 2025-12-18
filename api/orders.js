@@ -2,9 +2,42 @@
 import { sql } from "../lib/db.js";
 import { requireUser } from "../lib/auth.js";
 
-export default async function handler(req, res) {
-  if (req.method !== "GET") return res.status(405).json({ error: "Method Not Allowed" });
+const ALLOWED_ORIGINS = new Set([
+  "https://www.imbaricoffee.com",
+  "https://imbaricoffee.com",
+]);
 
+function setCors(req, res) {
+  const origin = req.headers.origin;
+
+  if (origin && ALLOWED_ORIGINS.has(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin"); // important for caching/CDNs
+  }
+
+  // If you do NOT use cookies, you can omit this.
+  // If you DO use cookies, keep it and ensure frontend uses credentials.
+  // res.setHeader("Access-Control-Allow-Credentials", "true");
+
+  res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+}
+
+export default async function handler(req, res) {
+  // Always attach CORS headers (for both OPTIONS and GET)
+  setCors(req, res);
+
+  // Handle preflight request
+  if (req.method === "OPTIONS") {
+    return res.status(204).end();
+  }
+
+  // Only allow GET for the actual endpoint
+  if (req.method !== "GET") {
+    return res.status(405).json({ error: "Method Not Allowed" });
+  }
+
+  // Auth only for GET (never for OPTIONS)
   const ident = requireUser(req, res);
   if (!ident) return;
 
