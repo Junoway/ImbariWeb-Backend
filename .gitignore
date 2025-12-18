@@ -12,3 +12,4 @@ node_modules
 # local stripe test payload
 payload.json
 
+schema.sql
