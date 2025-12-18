@@ -1,6 +1,14 @@
 // api/auth/signup.js
 import bcrypt from "bcryptjs";
 import { sql } from "../../lib/db.js";
+import { applyCors } from "../../lib/cors.js"; // adjust path if needed
+
+export default async function handler(req, res) {
+  if (applyCors(req, res)) return; // handles OPTIONS
+
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method Not Allowed" });
+  }
 
 function normalizeEmail(email) {
   return String(email || "").trim().toLowerCase();
@@ -64,4 +72,5 @@ export default async function handler(req, res) {
     console.error("signup error:", err);
     return res.status(500).json({ error: "Signup failed" });
   }
+}
 }
