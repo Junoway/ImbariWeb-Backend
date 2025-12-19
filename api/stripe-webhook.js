@@ -19,7 +19,7 @@ function centsToMajorUnits(cents) {
   return Math.round(cents) / 100;
 }
 
-export default async function handler(req, res) {
+export async function stripeWebhook(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
 
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;

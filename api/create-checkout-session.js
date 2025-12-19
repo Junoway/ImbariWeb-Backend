@@ -66,7 +66,7 @@ function normalizeImageUrl(image) {
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const toCents = (n) => Math.max(0, Math.round(Number(n) * 100));
 
-export default async function handler(req, res) {
+export async function createCheckoutSession(req, res) {
   setCors(req, res);
 
   // Preflight must succeed or browser blocks your checkout calls
