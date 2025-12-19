@@ -1,0 +1,9 @@
+schema.sql
+*.sql
+*.dump
+*.backup
+*.bak
+*.tar
+*.gz
+*.zip
+.DS_Store

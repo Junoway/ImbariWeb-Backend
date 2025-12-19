@@ -17,3 +17,8 @@ schema.sql
 # local db dumps
 schema.sql
 
+*.sql
+*.dump
+*.backup
+*.bak
+
