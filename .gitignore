@@ -13,3 +13,7 @@ node_modules
 payload.json
 
 schema.sql
+
+# local db dumps
+schema.sql
+
