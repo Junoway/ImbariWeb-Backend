@@ -3,7 +3,7 @@ import * as auth from "../lib/handlers/auth.js";
 import * as orders from "../lib/handlers/orders.js";
 import * as subs from "../lib/handlers/subscriptions.js";
 import * as admin from "../lib/handlers/admin.js";
-import * as user from "../lib/handlers/user.js";
+import * as user from "../lib/handlers/users.js";
 
 export default async function handler(req, res) {
   const method = req.method || "GET";
