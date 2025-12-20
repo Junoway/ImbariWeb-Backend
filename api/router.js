@@ -4,6 +4,7 @@ import * as orders from "../lib/handlers/orders.js";
 import * as subs from "../lib/handlers/subscriptions.js";
 import * as admin from "../lib/handlers/admin.js";
 import * as user from "../lib/handlers/users.js";
+import { applyCors } from "../lib/cors.js";
 
 export default async function handler(req, res) {
   const method = (req.method || "GET").toUpperCase();
@@ -12,12 +13,12 @@ export default async function handler(req, res) {
   // In Vercel Node functions, req.url is typically like "/api/auth/login?x=1"
   const pathname = (req.url || "").split("?")[0];
 
-  // Global preflight fast-path (safe default)
-  // Handlers that need to set CORS headers should still do so; this prevents random 405/404 on preflight.
-  if (method === "OPTIONS") {
-    res.statusCode = 204;
-    return res.end();
-  }
+  // Always apply CORS at the router level so:
+  // - OPTIONS preflight returns the right headers (fixes blocked preflight)
+  // - 4xx/5xx responses still include CORS headers
+  // - individual handlers can remain unchanged
+  const ended = applyCors(req, res);
+  if (ended) return;
 
   // ADMIN
   if (pathname === "/api/admin/analytics" && method === "GET") return admin.getAnalytics(req, res);
@@ -36,6 +37,10 @@ export default async function handler(req, res) {
 
   // USER
   if (pathname === "/api/user/me" && method === "GET") return user.me(req, res);
+
+  // NOTE: Your original router had GET here; keep it exactly as-is.
+  // If your frontend POSTs to this endpoint, you'll need to update this route later,
+  // but this change is strictly for CORS/preflight correctness.
   if (pathname === "/api/user/subscription" && method === "GET") return user.subscription(req, res);
 
   // ORDERS
