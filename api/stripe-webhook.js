@@ -19,7 +19,7 @@ function centsToMajorUnits(cents) {
   return Math.round(cents) / 100;
 }
 
-export async function stripeWebhook(req, res) {
+export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
 
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
@@ -54,9 +54,7 @@ export async function stripeWebhook(req, res) {
     const userId = session.metadata?.userId ? String(session.metadata.userId).trim() : null;
 
     const createdAt =
-      typeof session.created === "number"
-        ? new Date(session.created * 1000).toISOString()
-        : null;
+      typeof session.created === "number" ? new Date(session.created * 1000).toISOString() : null;
 
     async function upsertOrder({ status, setPaidAt = false, error = null }) {
       if (setPaidAt) {

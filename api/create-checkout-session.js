@@ -2,6 +2,7 @@
 import Stripe from "stripe";
 import { sql } from "../lib/db.js";
 import { getUserFromRequest, extractUserIdentity } from "../lib/auth.js";
+import { applyCors } from "../lib/cors.js";
 
 /**
  * Stripe client
@@ -10,34 +11,6 @@ import { getUserFromRequest, extractUserIdentity } from "../lib/auth.js";
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
   apiVersion: "2023-10-16",
 });
-
-/**
- * CORS
- * - Supports comma-separated ALLOWED_ORIGIN env
- * - Example: "https://www.imbaricoffee.com,https://imbaricoffee.com,http://localhost:3000"
- */
-const allowedOrigins = (process.env.ALLOWED_ORIGIN || "https://www.imbaricoffee.com")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
-
-function setCors(req, res) {
-  const origin = req.headers.origin;
-
-  // Reflect allowed origin (required when using credentials)
-  if (origin && allowedOrigins.includes(origin)) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-  }
-
-  // Important for caches/proxies
-  res.setHeader("Vary", "Origin");
-
-  // Preflight
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  // Only needed if you use cookies; leaving it on is safe if you reflect origin
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-}
 
 function parseBody(req) {
   if (!req?.body) return {};
@@ -66,11 +39,10 @@ function normalizeImageUrl(image) {
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const toCents = (n) => Math.max(0, Math.round(Number(n) * 100));
 
-export async function createCheckoutSession(req, res) {
-  setCors(req, res);
-
-  // Preflight must succeed or browser blocks your checkout calls
-  if (req.method === "OPTIONS") return res.status(204).end();
+export default async function handler(req, res) {
+  // Standardized CORS + OPTIONS handling (preflight)
+  // applyCors() returns true if it already ended the response (OPTIONS).
+  if (applyCors(req, res)) return;
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method Not Allowed" });
@@ -88,8 +60,8 @@ export async function createCheckoutSession(req, res) {
     const body = parseBody(req);
 
     // Accept both shapes to remain backward-compatible:
-    // - your older: { cartItems, customerEmail }
-    // - your newer: { items, email, subtotal, total, ... }
+    // - older: { cartItems, customerEmail }
+    // - newer: { items, email, subtotal, total, ... }
     const legacyCartItems = Array.isArray(body.cartItems) ? body.cartItems : null;
     const legacyEmail = typeof body.customerEmail === "string" ? body.customerEmail : null;
 
