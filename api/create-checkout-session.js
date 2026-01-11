@@ -3,6 +3,7 @@ import Stripe from "stripe";
 import { sql } from "../lib/db.js";
 import { getUserFromRequest, extractUserIdentity } from "../lib/auth.js";
 import { applyCors } from "../lib/cors.js";
+import { pesapalCreateOrder } from "../lib/pesapal.js";
 
 /**
  * Stripe client
@@ -57,7 +58,9 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: "Missing DATABASE_URL" });
     }
 
+
     const body = parseBody(req);
+    const paymentMethod = (body.paymentMethod || "stripe").toLowerCase();
 
     // Accept both shapes to remain backward-compatible:
     // - older: { cartItems, customerEmail }
@@ -94,8 +97,85 @@ export default async function handler(req, res) {
       total = null,
     } = body || {};
 
+
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: "Items array is required" });
+    }
+
+    // Pesapal mobile money flow
+    if (paymentMethod === "pesapal") {
+      // Only basic validation for now; add more as needed
+      if (!process.env.PESAPAL_CONSUMER_KEY || !process.env.PESAPAL_CONSUMER_SECRET) {
+        return res.status(500).json({ error: "Missing Pesapal credentials" });
+      }
+
+      // Compose order details
+      const pesapalOrder = {
+        amount: totalNum,
+        currency: "UGX", // TODO: support other currencies if needed
+        description: `Coffee order for ${effectiveEmail || "guest"}`,
+        callback_url: `${FRONTEND_URL}/checkout/pesapal-callback`,
+        reference: `order-${Date.now()}-${Math.floor(Math.random()*10000)}`,
+        customer: {
+          email_address: effectiveEmail,
+          phone_number: body.phoneNumber || "",
+          first_name: body.firstName || "",
+          last_name: body.lastName || "",
+        },
+        payment_method: "MOBILE_MONEY",
+      };
+
+      let pesapalRes;
+      try {
+        pesapalRes = await pesapalCreateOrder(pesapalOrder);
+      } catch (err) {
+        console.error("Pesapal order error:", err);
+        return res.status(500).json({ error: "Pesapal order failed" });
+      }
+
+      // Store order with pesapal reference
+      await sql`
+        insert into orders (
+          session_id, status, total, currency, email, user_id, created_at,
+          items, location, shipping, tax, discount_code, discount_amount, tip_amount, payment_method
+        )
+        values (
+          ${pesapalRes.order_tracking_id},
+          'pending',
+          ${totalNum},
+          'UGX',
+          ${effectiveEmail},
+          ${userId},
+          now(),
+          ${JSON.stringify(items)},
+          ${location || null},
+          ${shippingNum},
+          ${taxNum},
+          ${discountAllowed ? normalizedCode : null},
+          ${clampedDiscount},
+          ${tipNum},
+          'pesapal'
+        )
+        on conflict (session_id) do update set
+          total = excluded.total,
+          currency = excluded.currency,
+          email = coalesce(excluded.email, orders.email),
+          user_id = coalesce(excluded.user_id, orders.user_id),
+          items = excluded.items,
+          location = coalesce(excluded.location, orders.location),
+          shipping = excluded.shipping,
+          tax = excluded.tax,
+          discount_code = excluded.discount_code,
+          discount_amount = excluded.discount_amount,
+          tip_amount = excluded.tip_amount,
+          payment_method = excluded.payment_method
+      `;
+
+      return res.status(200).json({
+        url: pesapalRes.redirect_url,
+        sessionId: pesapalRes.order_tracking_id,
+        paymentProvider: "pesapal",
+      });
     }
 
     // Optional identity bridging (does NOT require login)
@@ -132,14 +212,13 @@ export default async function handler(req, res) {
     const computedTotal = round2(computedItemsTotal + shippingNum + taxNum + tipNum);
     const totalNum = round2(total != null ? Number(total) : computedTotal);
 
-    // Stripe line items
+
+    // Stripe line items (default)
     const line_items = items.map((item) => {
       const qty = Math.max(1, Number(item.quantity || 1));
       const unitPrice = round2(Number(item.price || 0));
       const discountedUnitPrice = round2(unitPrice * (1 - discountRatio));
-
       const imageUrl = normalizeImageUrl(item.image);
-
       return {
         price_data: {
           currency: "usd",
@@ -152,7 +231,6 @@ export default async function handler(req, res) {
         quantity: qty,
       };
     });
-
     if (tipNum > 0) {
       line_items.push({
         price_data: {
